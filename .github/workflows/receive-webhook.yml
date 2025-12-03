@@ -1,0 +1,157 @@
+# WSO2-Processor: Recibe webhook desde Publisher de WSO2
+#
+# Este workflow se dispara cuando un usuario pulsa un botón en el Publisher.
+# Por ahora (MVP), solo soporta "Registrar UAT".
+#
+# Flujo:
+# 1. Recibe datos del webhook (API name, version, user)
+# 2. Exporta el API desde WSO2 usando apictl
+# 3. Prepara payload estándar
+# 4. Invoca al GIT-Helix-Processor
+
+name: Receive WSO2 Webhook
+
+on:
+  # Para MVP: disparamos manualmente simulando el webhook
+  workflow_dispatch:
+    inputs:
+      api_name:
+        description: 'Nombre del API'
+        required: true
+        type: string
+      api_version:
+        description: 'Versión del API (ej: 1.0.0)'
+        required: true
+        type: string
+      action:
+        description: 'Acción solicitada'
+        required: true
+        type: choice
+        options:
+          - register-uat
+          # Futuras opciones:
+          # - promote-nft
+          # - promote-pro
+      domain:
+        description: 'Dominio del API'
+        required: true
+        type: string
+        default: 'Informatica'
+      subdomain:
+        description: 'Subdominio del API'
+        required: true
+        type: string
+        default: 'DevOps'
+      invoker:
+        description: 'Usuario que dispara la acción'
+        required: true
+        type: string
+
+  # TODO: Cuando tengamos el webhook real de WSO2
+  # repository_dispatch:
+  #   types: [wso2-lifecycle-event]
+
+jobs:
+  process-webhook:
+    name: Procesar Webhook WSO2
+    runs-on: ubuntu-latest
+    # runs-on: self-hosted  # Cambiar cuando tengamos runner con apictl
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log evento recibido
+        run: |
+          echo "=========================================="
+          echo "Evento recibido desde WSO2 Publisher"
+          echo "=========================================="
+          echo "API: ${{ inputs.api_name }}"
+          echo "Versión: ${{ inputs.api_version }}"
+          echo "Acción: ${{ inputs.action }}"
+          echo "Dominio: ${{ inputs.domain }}"
+          echo "Subdominio: ${{ inputs.subdomain }}"
+          echo "Usuario: ${{ inputs.invoker }}"
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "=========================================="
+
+      # TODO MVP: Exportar API desde WSO2
+      # - name: Configurar apictl
+      #   run: |
+      #     apictl add env wso2 \
+      #       --apim ${{ secrets.WSO2_APIM_BASE_URL }}
+      #     apictl login wso2 \
+      #       -u ${{ secrets.WSO2_ADMIN_USERNAME }} \
+      #       -p ${{ secrets.WSO2_ADMIN_PASSWORD }} \
+      #       -k
+
+      # - name: Exportar API
+      #   run: |
+      #     apictl export api \
+      #       -n "${{ inputs.api_name }}" \
+      #       -v "${{ inputs.api_version }}" \
+      #       -e wso2 \
+      #       -k
+      #
+      #     # El ZIP se guarda en ~/.wso2apictl/exported/apis/
+
+      - name: Preparar payload estándar
+        id: payload
+        run: |
+          # Crear payload JSON estándar
+          PAYLOAD=$(cat <<EOF
+          {
+            "action": "${{ inputs.action }}",
+            "api": {
+              "name": "${{ inputs.api_name }}",
+              "version": "${{ inputs.api_version }}",
+              "domain": "${{ inputs.domain }}",
+              "subdomain": "${{ inputs.subdomain }}"
+            },
+            "user": {
+              "id": "${{ inputs.invoker }}",
+              "email": "${{ inputs.invoker }}@example.com"
+            },
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "source": {
+              "system": "wso2",
+              "workflow_run_id": "${{ github.run_id }}"
+            }
+          }
+          EOF
+          )
+
+          echo "Payload generado:"
+          echo "$PAYLOAD" | jq .
+
+          # Guardar para siguiente step
+          echo "payload<<EOF" >> $GITHUB_OUTPUT
+          echo "$PAYLOAD" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Invocar GIT-Helix-Processor
+        run: |
+          echo "Invocando GIT-Helix-Processor..."
+          echo "Acción: ${{ inputs.action }}"
+
+          # TODO: Descomentar cuando el repo GIT-Helix-Processor esté en GitHub
+          # gh workflow run register-api-uat.yml \
+          #   --repo ${{ github.repository_owner }}/GIT-Helix-Processor \
+          #   --field payload='${{ steps.payload.outputs.payload }}'
+
+          echo ""
+          echo ">>> SIMULACIÓN: El payload se enviaría al GIT-Helix-Processor <<<"
+          echo ""
+          echo "Payload que se enviaría:"
+          echo '${{ steps.payload.outputs.payload }}' | jq .
+
+      - name: Resumen
+        run: |
+          echo "## Resultado del Procesamiento" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| API | ${{ inputs.api_name }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Versión | ${{ inputs.api_version }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Acción | ${{ inputs.action }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Estado | Simulado (MVP) |" >> $GITHUB_STEP_SUMMARY

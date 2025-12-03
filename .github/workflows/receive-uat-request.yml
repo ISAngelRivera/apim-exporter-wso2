@@ -1,0 +1,338 @@
+# =============================================================================
+# WSO2-Processor: Extractor de APIs de WSO2
+# =============================================================================
+# Vendor-específico: Solo extrae datos de WSO2 y los pasa a Helix-Processor
+# Usa apictl export para obtener el backup completo de la API
+# NO contiene lógica de negocio, Helix, ni almacenamiento
+#
+# ESCALABILIDAD: Usa requestId único para correlacionar requests en entornos
+# con 2500+ APIs concurrentes
+# =============================================================================
+name: Receive UAT Request
+
+# Dynamic run name for tracking
+run-name: "UAT: ${{ inputs.apiName }} v${{ inputs.apiVersion }} [${{ inputs.requestId }}]"
+
+on:
+  workflow_dispatch:
+    inputs:
+      requestId:
+        description: 'Unique Request ID for correlation (REQ-xxx-xxx)'
+        required: false
+        type: string
+        default: ''
+      apiId:
+        description: 'WSO2 API ID'
+        required: true
+        type: string
+      apiName:
+        description: 'API Name'
+        required: true
+        type: string
+      apiVersion:
+        description: 'API Version'
+        required: true
+        type: string
+      apiContext:
+        description: 'API Context path'
+        required: false
+        type: string
+        default: ''
+      userId:
+        description: 'User who triggered the registration'
+        required: false
+        type: string
+        default: 'unknown'
+      timestamp:
+        description: 'Request timestamp'
+        required: false
+        type: string
+
+env:
+  WSO2_HOST: wso2-apim
+  WSO2_PORT: "9443"
+  WSO2_USERNAME: admin
+  WSO2_PASSWORD: admin
+  HELIX_PROCESSOR_REPO: ISAngelRivera/GIT-Helix-Processor
+
+jobs:
+  extract-and-forward:
+    name: "UAT ${{ inputs.apiName }} v${{ inputs.apiVersion }} → ${{ inputs.requestId }}"
+    runs-on: [self-hosted, linux, apiops]
+
+    steps:
+      - name: Generate or Use Request ID
+        id: req-id
+        run: |
+          # Use provided requestId or generate one
+          if [ -n "${{ inputs.requestId }}" ]; then
+            REQUEST_ID="${{ inputs.requestId }}"
+          else
+            # Generate fallback ID: REQ-{api-short}-{timestamp}-{random}
+            API_SHORT=$(echo "${{ inputs.apiId }}" | cut -c1-8)
+            TIMESTAMP=$(date +%s | cut -c6-10)
+            RANDOM_PART=$(echo $RANDOM | md5sum | cut -c1-4)
+            REQUEST_ID="REQ-${API_SHORT}-${TIMESTAMP}-${RANDOM_PART}"
+          fi
+          echo "request_id=${REQUEST_ID}" >> $GITHUB_OUTPUT
+          echo "Request ID: ${REQUEST_ID}"
+
+      - name: Log Request
+        run: |
+          echo "=========================================="
+          echo "  WSO2 API Extraction Request"
+          echo "=========================================="
+          echo "Request ID:  ${{ steps.req-id.outputs.request_id }}"
+          echo "API ID:      ${{ inputs.apiId }}"
+          echo "API Name:    ${{ inputs.apiName }}"
+          echo "API Version: ${{ inputs.apiVersion }}"
+          echo "User:        ${{ inputs.userId }}"
+          echo "=========================================="
+
+      - name: Setup apictl environment
+        run: |
+          echo "Configuring apictl environment..."
+
+          # Limpiar ambiente anterior si existe
+          ~/.local/bin/apictl/apictl/apictl remove env wso2-docker 2>/dev/null || true
+
+          # Añadir ambiente
+          ~/.local/bin/apictl/apictl/apictl add env wso2-docker \
+            --apim "https://${{ env.WSO2_HOST }}:${{ env.WSO2_PORT }}"
+
+          echo "Environment configured"
+
+      - name: Login to WSO2
+        run: |
+          echo "Logging into WSO2..."
+
+          ~/.local/bin/apictl/apictl/apictl login wso2-docker \
+            -u ${{ env.WSO2_USERNAME }} \
+            -p ${{ env.WSO2_PASSWORD }} \
+            -k
+
+          echo "Login successful"
+
+      - name: Get Latest Deployed Revision
+        id: get-revision
+        run: |
+          echo "Getting latest deployed revision for API ${{ inputs.apiId }}..."
+
+          # Get OAuth token for API calls
+          CLIENT_RESP=$(curl -sk -X POST \
+            -H "Authorization: Basic YWRtaW46YWRtaW4=" \
+            -H "Content-Type: application/json" \
+            -d '{"callbackUrl":"https://localhost","clientName":"revision_check","owner":"admin","grantType":"password","saasApp":true}' \
+            "https://${{ env.WSO2_HOST }}:${{ env.WSO2_PORT }}/client-registration/v0.17/register")
+
+          CID=$(echo "$CLIENT_RESP" | jq -r '.clientId')
+          CS=$(echo "$CLIENT_RESP" | jq -r '.clientSecret')
+
+          TOKEN=$(curl -sk -X POST \
+            -H "Authorization: Basic $(echo -n "${CID}:${CS}" | base64)" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            -d "grant_type=password&username=${{ env.WSO2_USERNAME }}&password=${{ env.WSO2_PASSWORD }}&scope=apim:api_view" \
+            "https://${{ env.WSO2_HOST }}:${{ env.WSO2_PORT }}/oauth2/token" | jq -r '.access_token')
+
+          # Get ONLY deployed revisions for this API
+          REVISIONS=$(curl -sk -H "Authorization: Bearer $TOKEN" \
+            "https://${{ env.WSO2_HOST }}:${{ env.WSO2_PORT }}/api/am/publisher/v4/apis/${{ inputs.apiId }}/revisions?query=deployed:true")
+
+          echo "Deployed revisions response: $REVISIONS"
+
+          # Count deployed revisions
+          REV_COUNT=$(echo "$REVISIONS" | jq -r '.count // 0')
+
+          # REQUIREMENT: API must have at least one deployed revision
+          if [ "$REV_COUNT" == "0" ] || [ "$REV_COUNT" == "null" ]; then
+            echo "=========================================="
+            echo "  ERROR: API no desplegada"
+            echo "=========================================="
+            echo ""
+            echo "La API debe tener al menos una revision desplegada"
+            echo "en un Gateway para poder registrarse en UAT."
+            echo ""
+            echo "Para desplegar:"
+            echo "1. Ve a la API en el Publisher"
+            echo "2. Deployments > Deploy New Revision"
+            echo "3. Selecciona el Gateway y despliega"
+            echo ""
+            exit 1
+          fi
+
+          # Get the latest (highest) deployed revision
+          # NOTE: .id is a UUID (string), so we sort by displayName which has format "Revision N"
+          # Extract the revision NUMBER (not UUID) for Helix-Processor
+          LATEST_REV_NUM=$(echo "$REVISIONS" | jq -r '
+            .list
+            | sort_by(.displayName | capture("Revision (?<n>[0-9]+)") | .n | tonumber)
+            | last
+            | .displayName
+            | capture("Revision (?<n>[0-9]+)")
+            | .n
+          ')
+
+          echo "Latest deployed revision number: $LATEST_REV_NUM"
+          echo "latest_revision=$LATEST_REV_NUM" >> $GITHUB_OUTPUT
+
+      - name: Export API with apictl
+        id: export
+        run: |
+          echo "Exporting API with apictl..."
+
+          EXPORT_DIR="./export-output"
+          mkdir -p "$EXPORT_DIR"
+
+          # Exportar API completa (genera ZIP con toda la estructura)
+          ~/.local/bin/apictl/apictl/apictl export api \
+            --name "${{ inputs.apiName }}" \
+            --version "${{ inputs.apiVersion }}" \
+            --provider admin \
+            --environment wso2-docker \
+            --format JSON \
+            -k
+
+          # El ZIP se exporta con formato: API-NAME_VERSION.zip
+          ZIP_FILE="$HOME/.wso2apictl/exported/apis/wso2-docker/${{ inputs.apiName }}_${{ inputs.apiVersion }}.zip"
+
+          if [ ! -f "$ZIP_FILE" ]; then
+            echo "ERROR: No se encontró el archivo ZIP exportado en: $ZIP_FILE"
+            echo "Contenido del directorio:"
+            ls -la "$HOME/.wso2apictl/exported/apis/wso2-docker/" 2>/dev/null || echo "Directorio no existe"
+            exit 1
+          fi
+
+          echo "ZIP exportado: $ZIP_FILE"
+
+          # Copiar ZIP a directorio de trabajo
+          cp "$ZIP_FILE" "$EXPORT_DIR/api-export.zip"
+
+          # Descomprimir para leer datos
+          unzip -q "$EXPORT_DIR/api-export.zip" -d "$EXPORT_DIR/extracted"
+
+          # Leer api.json o api.yaml para extraer metadatos
+          API_DIR=$(find "$EXPORT_DIR/extracted" -type d -name "${{ inputs.apiName }}-${{ inputs.apiVersion }}" | head -1)
+
+          if [ -z "$API_DIR" ]; then
+            API_DIR=$(find "$EXPORT_DIR/extracted" -type d -mindepth 1 -maxdepth 1 | head -1)
+          fi
+
+          echo "API_DIR: $API_DIR"
+          ls -la "$API_DIR" || true
+
+          # Leer api.yaml o api.json
+          if [ -f "$API_DIR/api.json" ]; then
+            API_DATA=$(cat "$API_DIR/api.json")
+          elif [ -f "$API_DIR/api.yaml" ]; then
+            # Convertir YAML a JSON si es necesario
+            API_DATA=$(python3 -c "import yaml, json, sys; print(json.dumps(yaml.safe_load(open('$API_DIR/api.yaml'))))" 2>/dev/null || cat "$API_DIR/api.yaml")
+          else
+            echo "ERROR: No se encontró api.json ni api.yaml"
+            ls -laR "$EXPORT_DIR/extracted"
+            exit 1
+          fi
+
+          # Extraer subdominio de additionalProperties
+          SUBDOMINIO=$(echo "$API_DATA" | jq -r '.data.additionalProperties[]? | select(.name=="subdominio") | .value // empty' 2>/dev/null)
+
+          # Intentar otras ubicaciones
+          if [ -z "$SUBDOMINIO" ]; then
+            SUBDOMINIO=$(echo "$API_DATA" | jq -r '.additionalProperties[]? | select(.name=="subdominio") | .value // empty' 2>/dev/null)
+          fi
+          if [ -z "$SUBDOMINIO" ]; then
+            SUBDOMINIO=$(echo "$API_DATA" | jq -r '.data.additionalPropertiesMap.subdominio // empty' 2>/dev/null)
+          fi
+
+          # Extraer backend URL
+          BACKEND_URL=$(echo "$API_DATA" | jq -r '.data.endpointConfig.production_endpoints.url // .endpointConfig.production_endpoints.url // "unknown"' 2>/dev/null)
+
+          # Use revision ID from previous step (obtained via REST API)
+          REVISION_ID="${{ steps.get-revision.outputs.latest_revision }}"
+
+          echo "Subdominio: $SUBDOMINIO"
+          echo "Backend: $BACKEND_URL"
+          echo "Revision ID: $REVISION_ID (from REST API)"
+
+          # Validar que subdominio está especificado
+          if [ -z "$SUBDOMINIO" ]; then
+            echo "=========================================="
+            echo "  ERROR: Campo 'subdominio' no especificado"
+            echo "=========================================="
+            echo ""
+            echo "La API debe tener una propiedad adicional 'subdominio'"
+            echo "Para configurarlo:"
+            echo "1. Ve a la API en el Publisher"
+            echo "2. Properties > Additional Properties"
+            echo "3. Añade: subdominio = <nombre-subdominio>"
+            echo ""
+            echo "DEBUG - Contenido de api.yaml/api.json:"
+            echo "$API_DATA" | head -100
+            exit 1
+          fi
+
+          # Codificar el ZIP completo en base64
+          API_EXPORT_B64=$(base64 -w 0 "$EXPORT_DIR/api-export.zip")
+
+          # Guardar en archivo para evitar límites de variable
+          echo "$API_EXPORT_B64" > /tmp/api_export_b64.txt
+
+          echo "subdominio=$SUBDOMINIO" >> $GITHUB_OUTPUT
+          echo "backend_url=$BACKEND_URL" >> $GITHUB_OUTPUT
+          echo "revision_id=$REVISION_ID" >> $GITHUB_OUTPUT
+          echo "export_file=/tmp/api_export_b64.txt" >> $GITHUB_OUTPUT
+
+          echo ""
+          echo "API exported successfully"
+          echo "ZIP size: $(du -h "$EXPORT_DIR/api-export.zip" | cut -f1)"
+          echo "Base64 size: $(du -h /tmp/api_export_b64.txt | cut -f1)"
+
+      - name: Forward to Helix-Processor
+        env:
+          GH_TOKEN: ${{ secrets.GIT_HELIX_PAT }}
+        run: |
+          echo "Forwarding to Helix-Processor..."
+
+          # Leer base64 del archivo
+          API_EXPORT_B64=$(cat /tmp/api_export_b64.txt)
+
+          # Llamar al workflow de Helix-Processor con requestId y revisionId
+          gh workflow run process-api-request.yml \
+            --repo "${{ env.HELIX_PROCESSOR_REPO }}" \
+            -f requestId="${{ steps.req-id.outputs.request_id }}" \
+            -f subdominio="${{ steps.export.outputs.subdominio }}" \
+            -f apiName="${{ inputs.apiName }}" \
+            -f apiVersion="${{ inputs.apiVersion }}" \
+            -f apiContext="${{ inputs.apiContext }}" \
+            -f revisionId="${{ steps.export.outputs.revision_id }}" \
+            -f backendUrl="${{ steps.export.outputs.backend_url }}" \
+            -f apiExportZip="$API_EXPORT_B64" \
+            -f sourceSystem="wso2" \
+            -f userId="${{ inputs.userId }}"
+
+          echo ""
+          echo "=========================================="
+          echo "  Request forwarded to Helix-Processor"
+          echo "  Request ID: ${{ steps.req-id.outputs.request_id }}"
+          echo "  Subdominio: ${{ steps.export.outputs.subdominio }}"
+          echo "=========================================="
+
+      - name: Cleanup
+        if: always()
+        run: |
+          rm -rf ./export-output /tmp/api_export_b64.txt
+          ~/.local/bin/apictl/apictl/apictl logout wso2-docker 2>/dev/null || true
+
+      - name: Summary
+        run: |
+          echo "## WSO2 API Extracted" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Request ID | ${{ steps.req-id.outputs.request_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| API | ${{ inputs.apiName }} v${{ inputs.apiVersion }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Revision | ${{ steps.export.outputs.revision_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Subdominio | ${{ steps.export.outputs.subdominio }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Backend | ${{ steps.export.outputs.backend_url }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Export | apictl export (ZIP completo) |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Forwarded to Helix-Processor for processing." >> $GITHUB_STEP_SUMMARY
