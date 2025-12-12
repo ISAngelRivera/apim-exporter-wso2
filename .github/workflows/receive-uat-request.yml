@@ -1,5 +1,5 @@
 # =============================================================================
-# WSO2-Processor: Extractor de APIs de WSO2
+# apim-exporter-wso2: Extractor de APIs de WSO2
 # =============================================================================
 # Vendor-específico: Solo extrae datos de WSO2 y los pasa a Helix-Processor
 # Usa apictl export para obtener el backup completo de la API
@@ -53,7 +53,7 @@ env:
   WSO2_PORT: "9443"
   WSO2_USERNAME: admin
   WSO2_PASSWORD: admin
-  HELIX_PROCESSOR_REPO: ISAngelRivera/GIT-Helix-Processor
+  HELIX_PROCESSOR_REPO: ISAngelRivera/apim-apiops-controller
 
 jobs:
   extract-and-forward:

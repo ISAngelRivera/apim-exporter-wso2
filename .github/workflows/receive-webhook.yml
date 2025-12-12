@@ -1,4 +1,4 @@
-# WSO2-Processor: Recibe webhook desde Publisher de WSO2
+# apim-exporter-wso2: Recibe webhook desde Publisher de WSO2
 #
 # Este workflow se dispara cuando un usuario pulsa un botón en el Publisher.
 # Por ahora (MVP), solo soporta "Registrar UAT".
@@ -7,7 +7,7 @@
 # 1. Recibe datos del webhook (API name, version, user)
 # 2. Exporta el API desde WSO2 usando apictl
 # 3. Prepara payload estándar
-# 4. Invoca al GIT-Helix-Processor
+# 4. Invoca al apim-apiops-controller
 
 name: Receive WSO2 Webhook
 
@@ -129,18 +129,18 @@ jobs:
           echo "$PAYLOAD" >> $GITHUB_OUTPUT
           echo "EOF" >> $GITHUB_OUTPUT
 
-      - name: Invocar GIT-Helix-Processor
+      - name: Invocar apim-apiops-controller
         run: |
-          echo "Invocando GIT-Helix-Processor..."
+          echo "Invocando apim-apiops-controller..."
           echo "Acción: ${{ inputs.action }}"
 
-          # TODO: Descomentar cuando el repo GIT-Helix-Processor esté en GitHub
+          # TODO: Descomentar cuando el repo apim-apiops-controller esté en GitHub
           # gh workflow run register-api-uat.yml \
-          #   --repo ${{ github.repository_owner }}/GIT-Helix-Processor \
+          #   --repo ${{ github.repository_owner }}/apim-apiops-controller \
           #   --field payload='${{ steps.payload.outputs.payload }}'
 
           echo ""
-          echo ">>> SIMULACIÓN: El payload se enviaría al GIT-Helix-Processor <<<"
+          echo ">>> SIMULACIÓN: El payload se enviaría al apim-apiops-controller <<<"
           echo ""
           echo "Payload que se enviaría:"
           echo '${{ steps.payload.outputs.payload }}' | jq .

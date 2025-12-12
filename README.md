@@ -1,4 +1,4 @@
-# WSO2-Processor
+# apim-exporter-wso2
 
 Procesador específico para WSO2 API Manager en la arquitectura APIOps GitOps.
 
@@ -12,7 +12,7 @@ Procesador específico para WSO2 API Manager en la arquitectura APIOps GitOps.
           │ workflow_dispatch
           ▼
 ┌─────────────────────┐
-│   WSO2-Processor    │  ← Este repositorio
+│   apim-exporter-wso2    │  ← Este repositorio
 │  (GitHub Actions)   │
 │  - Exporta API      │
 │  - Crea PR          │
@@ -20,7 +20,7 @@ Procesador específico para WSO2 API Manager en la arquitectura APIOps GitOps.
           │ Pull Request con datos PLANOS
           ▼
 ┌─────────────────────┐
-│ GIT-Helix-Processor │
+│ apim-apiops-controller │
 │  - Linters          │
 │  - CRQ Helix        │
 │  - Almacena API     │
@@ -45,7 +45,7 @@ Recibe solicitudes de registro UAT desde el botón en WSO2 Publisher.
 | `userId` | No | Usuario que dispara el registro |
 | `metadata` | No | Metadatos adicionales (JSON) |
 
-**Output**: PR en GIT-Helix-Processor con estructura de datos PLANOS:
+**Output**: PR en apim-apiops-controller con estructura de datos PLANOS:
 ```
 requests/
 └── 2024-12-04-pizzaapi-v1-0-0-uat/
@@ -64,8 +64,8 @@ requests/
 | `WSO2_BASE_URL` | URL base de WSO2 APIM (default: https://localhost:9443) |
 | `WSO2_USERNAME` | Usuario admin de WSO2 |
 | `WSO2_PASSWORD` | Password de WSO2 |
-| `GIT_HELIX_PAT` | Personal Access Token para crear PRs en GIT-Helix-Processor |
-| `GIT_HELIX_REPO` | Repositorio destino (default: ISAngelRivera/GIT-Helix-Processor) |
+| `GIT_HELIX_PAT` | Personal Access Token para crear PRs en apim-apiops-controller |
+| `GIT_HELIX_REPO` | Repositorio destino (default: ISAngelRivera/apim-apiops-controller) |
 
 ### Token del Publisher
 
@@ -88,7 +88,7 @@ timestamp: 2024-12-04T10:30:00Z
 
 source:
   system: wso2
-  processor: WSO2-Processor
+  processor: apim-exporter-wso2
   run_id: "12345"
 
 api:
@@ -122,4 +122,4 @@ Este repo es **específico de WSO2**. Para otros API Managers:
 - `Kong-Processor` - Para Kong Gateway
 - `AWS-API-GW-Processor` - Para AWS API Gateway
 
-Todos los processors crean PRs con el mismo formato en GIT-Helix-Processor, haciendo la arquitectura **vendor-agnostic**.
+Todos los processors crean PRs con el mismo formato en apim-apiops-controller, haciendo la arquitectura **vendor-agnostic**.
